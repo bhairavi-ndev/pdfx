@@ -1,6 +1,6 @@
 {
   "name": "pdfx",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "PDFX — a backwards-compatible PDF extension for multi-document files, with a minimal viewer",
   "main": "./out/main/index.js",
   "author": "Alex Gounis",
@@ -32,6 +32,7 @@
     "electron": "38.4.0",
     "electron-builder": "^25.1.8",
     "electron-vite": "^4.0.0",
+    "fflate": "^0.8.3",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^5.5.207",
     "prettier": "^3.6.2",

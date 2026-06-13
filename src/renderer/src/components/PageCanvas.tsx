@@ -1,22 +1,33 @@
 import { useEffect, useRef, useState } from 'react'
 import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist'
 
+// Cap raster dimensions so deep zoom on large pages can't allocate huge canvases.
+const MAX_RASTER = 3000
+
 interface PageCanvasProps {
   pdf: PDFDocumentProxy
   pageNumber: number
-  width: number
+  /** Display height the raster should target; the canvas itself fills its parent. */
   height: number
 }
 
-export function PageCanvas({ pdf, pageNumber, width, height }: PageCanvasProps): React.JSX.Element {
-  const containerRef = useRef<HTMLDivElement>(null)
+export function PageCanvas({ pdf, pageNumber, height }: PageCanvasProps): React.JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [visible, setVisible] = useState(false)
   const [rendered, setRendered] = useState(false)
+  // During a zoom gesture the canvas just CSS-stretches to its container;
+  // once the size settles for a beat we re-rasterize at the new resolution.
+  const [rasterHeight, setRasterHeight] = useState(height)
+
+  useEffect(() => {
+    if (rasterHeight === height) return
+    const timer = setTimeout(() => setRasterHeight(height), 160)
+    return () => clearTimeout(timer)
+  }, [height, rasterHeight])
 
   // Lazy rendering: only rasterize pages near the viewport.
   useEffect(() => {
-    const element = containerRef.current
+    const element = canvasRef.current
     if (!element) return
     const observer = new IntersectionObserver(
       (entries) => {
@@ -42,13 +53,18 @@ export function PageCanvas({ pdf, pageNumber, width, height }: PageCanvasProps):
         if (cancelled) return
         const dpr = Math.min(window.devicePixelRatio || 1, 2)
         const baseViewport = page.getViewport({ scale: 1 })
-        const viewport = page.getViewport({ scale: (height / baseViewport.height) * dpr })
+        const scale = Math.min(
+          (rasterHeight / baseViewport.height) * dpr,
+          MAX_RASTER / baseViewport.height,
+          MAX_RASTER / baseViewport.width
+        )
+        const viewport = page.getViewport({ scale })
 
         // Render to an offscreen canvas, then blit — avoids pdf.js's
         // "same canvas in multiple render() calls" error under re-renders.
         const offscreen = document.createElement('canvas')
-        offscreen.width = Math.floor(viewport.width)
-        offscreen.height = Math.floor(viewport.height)
+        offscreen.width = Math.max(1, Math.floor(viewport.width))
+        offscreen.height = Math.max(1, Math.floor(viewport.height))
         task = page.render({ canvas: offscreen, viewport })
         await task.promise
         if (cancelled) return
@@ -70,16 +86,7 @@ export function PageCanvas({ pdf, pageNumber, width, height }: PageCanvasProps):
       cancelled = true
       task?.cancel()
     }
-  }, [visible, pdf, pageNumber, height])
+  }, [visible, pdf, pageNumber, rasterHeight])
 
-  return (
-    <div className="page" ref={containerRef} style={{ width, height }}>
-      <canvas
-        ref={canvasRef}
-        className={rendered ? 'page-canvas visible' : 'page-canvas'}
-        style={{ width, height }}
-      />
-      <span className="page-number">{pageNumber}</span>
-    </div>
-  )
+  return <canvas ref={canvasRef} className={rendered ? 'page-canvas visible' : 'page-canvas'} />
 }

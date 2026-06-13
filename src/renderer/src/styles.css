@@ -6,6 +6,7 @@
   --ink-faint: #8e8e94;
   --hairline: #e6e6e2;
   --accent: #16161a;
+  --select: #74a9ff;
   --radius: 10px;
   --page-shadow: 0 1px 2px rgba(20, 20, 24, 0.07), 0 6px 20px rgba(20, 20, 24, 0.06);
 }
@@ -78,6 +79,33 @@ body {
 
 .toolbar-spacer {
   flex: 1;
+}
+
+.zoom-cluster {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  margin-right: 8px;
+}
+
+.zoom-value {
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-soft);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  min-width: 46px;
+  padding: 5px 4px;
+  text-align: center;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.zoom-value:hover {
+  background: rgba(22, 22, 26, 0.06);
 }
 
 /* ---------- Buttons ---------- */
@@ -160,20 +188,27 @@ body {
 .doc-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 28px 0 48px;
+  gap: 6px;
+  padding: 16px 0 48px;
 }
 
 .doc-row {
-  padding: 10px 0 18px;
+  padding: 0 0 14px;
 }
 
+/* Headers stay pinned while their document is in view, so the controls
+   and the document name are always at hand. */
 .doc-header {
+  position: sticky;
+  top: 0;
+  z-index: 3;
   display: flex;
   align-items: baseline;
   gap: 10px;
-  padding: 0 28px;
-  margin-bottom: 12px;
+  padding: 10px 28px 8px;
+  margin-bottom: 4px;
+  background: rgba(247, 247, 245, 0.88);
+  backdrop-filter: blur(8px);
 }
 
 .doc-index {
@@ -229,10 +264,26 @@ body {
   border-radius: 4px;
   box-shadow: var(--page-shadow);
   overflow: hidden;
+  cursor: pointer;
+  /* Animates the insertion gap that opens while a foreign page hovers. */
+  transition:
+    margin-left 0.18s ease,
+    margin-right 0.18s ease;
+}
+
+.page.selected {
+  outline: 3px solid var(--select);
+  outline-offset: 2px;
+}
+
+.page.dragging {
+  opacity: 0.35;
 }
 
 .page-canvas {
   display: block;
+  width: 100%;
+  height: 100%;
   opacity: 0;
   transition: opacity 0.25s ease;
 }
@@ -258,6 +309,48 @@ body {
 
 .page:hover .page-number {
   opacity: 1;
+}
+
+/* ---------- Compact mode (zoomed-out overview) ---------- */
+
+.doc-list.compact {
+  gap: 2px;
+  padding-top: 8px;
+}
+
+.doc-list.compact .doc-row {
+  padding: 0 0 6px;
+}
+
+.doc-list.compact .doc-header {
+  padding: 4px 28px 3px;
+  margin-bottom: 2px;
+}
+
+.doc-list.compact .doc-index {
+  display: none;
+}
+
+.doc-list.compact .doc-name {
+  font-size: 11px;
+}
+
+.doc-list.compact .doc-pages {
+  font-size: 10px;
+}
+
+.doc-list.compact .page-strip {
+  gap: 8px;
+  padding: 2px 28px 6px;
+}
+
+.doc-list.compact .page {
+  border-radius: 2px;
+  box-shadow: 0 1px 3px rgba(20, 20, 24, 0.1);
+}
+
+.doc-list.compact .page-number {
+  display: none;
 }
 
 /* Thin scrollbars */
@@ -392,6 +485,143 @@ body {
   padding: 10px 22px;
   border-radius: 999px;
   box-shadow: 0 8px 28px rgba(20, 20, 24, 0.25);
+}
+
+/* ---------- Full view ---------- */
+
+.full-view {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: rgba(247, 247, 245, 0.98);
+  animation: full-view-in 0.16s ease;
+}
+
+@keyframes full-view-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.full-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 16px;
+}
+
+.full-bar.mac {
+  padding-left: 84px;
+}
+
+.full-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.full-bar .icon-btn {
+  margin-left: auto;
+  width: 30px;
+  height: 30px;
+}
+
+.full-strip {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-snap-type: x mandatory;
+}
+
+.full-strip::-webkit-scrollbar {
+  display: none;
+}
+
+.full-slide {
+  flex: 0 0 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  scroll-snap-align: center;
+  scroll-snap-stop: always;
+}
+
+.full-page {
+  position: relative;
+  background: var(--surface);
+  border-radius: 4px;
+  overflow: hidden;
+  box-shadow:
+    0 2px 6px rgba(20, 20, 24, 0.08),
+    0 18px 60px rgba(20, 20, 24, 0.16);
+}
+
+.full-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--ink-soft);
+  box-shadow: 0 2px 10px rgba(20, 20, 24, 0.14);
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 0.15s ease,
+    color 0.15s ease;
+}
+
+.full-view:hover .full-nav {
+  opacity: 1;
+}
+
+.full-nav:hover {
+  color: var(--ink);
+}
+
+.full-nav:disabled {
+  opacity: 0 !important;
+  cursor: default;
+}
+
+.full-nav.prev {
+  left: 18px;
+}
+
+.full-nav.next {
+  right: 18px;
+}
+
+.full-count {
+  position: absolute;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2;
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-soft);
+  background: rgba(255, 255, 255, 0.9);
+  border-radius: 999px;
+  padding: 4px 12px;
+  box-shadow: 0 1px 6px rgba(20, 20, 24, 0.1);
 }
 
 /* ---------- Toast ---------- */

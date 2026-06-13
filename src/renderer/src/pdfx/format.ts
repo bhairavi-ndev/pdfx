@@ -1,5 +1,5 @@
 import { PDFDocument } from 'pdf-lib'
-import { getDocument, type PDFDocumentProxy } from 'pdfjs-dist'
+import type { PDFDocumentProxy } from 'pdfjs-dist'
 
 /**
  * PDFX format, v1.0
@@ -36,9 +36,26 @@ export interface PdfxManifest {
   documents: PdfxManifestDocument[]
 }
 
-export interface SourceDocument {
+/** A run of pages belonging to one logical document. */
+export interface PagePartition {
   name: string
+  /** 0-based page indices into the container PDF. */
+  indices: number[]
+}
+
+/** One page of a document to export, referencing its source PDF. */
+export interface ExportPage {
+  /** Bytes of the source PDF this page comes from. */
   bytes: Uint8Array
+  /** Stable key identifying the source, so loads can be cached. */
+  sourceKey: string
+  /** 0-based page index within the source. */
+  pageIndex: number
+}
+
+export interface ExportDocument {
+  name: string
+  pages: ExportPage[]
 }
 
 function range(start: number, count: number): number[] {
@@ -75,63 +92,67 @@ export async function readManifest(pdf: PDFDocumentProxy): Promise<PdfxManifest 
   return null
 }
 
-/** Split a PDFX container into standalone per-document PDFs, per its manifest. */
-export async function splitPdfx(
-  bytes: Uint8Array,
-  manifest: PdfxManifest
-): Promise<SourceDocument[]> {
-  const source = await PDFDocument.load(bytes, { ignoreEncryption: true })
-  const total = source.getPageCount()
-  const documents: SourceDocument[] = []
-  let cursor = 0
+/**
+ * Partition a container PDF's pages into logical documents. No manifest means
+ * a single document — plain PDFs are unaffected. Lenient reading: pages
+ * beyond the manifest become one trailing document.
+ */
+export function partitionPages(
+  manifest: PdfxManifest | null,
+  totalPages: number,
+  fallbackName: string
+): PagePartition[] {
+  if (!manifest) return [{ name: fallbackName, indices: range(0, totalPages) }]
 
+  const partitions: PagePartition[] = []
+  let cursor = 0
   for (const entry of manifest.documents) {
-    const count = Math.min(entry.pages, total - cursor)
+    const count = Math.min(entry.pages, totalPages - cursor)
     if (count <= 0) break
-    const target = await PDFDocument.create()
-    const pages = await target.copyPages(source, range(cursor, count))
-    pages.forEach((page) => target.addPage(page))
-    documents.push({ name: entry.name, bytes: await target.save() })
+    partitions.push({ name: entry.name, indices: range(cursor, count) })
     cursor += count
   }
-
-  // Lenient reading: pages beyond the manifest become one trailing document.
-  if (cursor < total) {
-    const target = await PDFDocument.create()
-    const pages = await target.copyPages(source, range(cursor, total - cursor))
-    pages.forEach((page) => target.addPage(page))
-    documents.push({ name: 'Untitled', bytes: await target.save() })
+  if (cursor < totalPages) {
+    partitions.push({ name: 'Untitled', indices: range(cursor, totalPages - cursor) })
   }
-
-  return documents
+  return partitions
 }
 
-/**
- * Import any .pdf or .pdfx file: returns one source document per logical
- * document. A plain PDF (no manifest) is a single document — unaffected.
- */
-export async function importFile(filename: string, bytes: Uint8Array): Promise<SourceDocument[]> {
-  // pdf.js transfers the buffer to its worker, so hand it a copy.
-  const pdf = await getDocument({ data: bytes.slice() }).promise
-  try {
-    const manifest = await readManifest(pdf)
-    if (!manifest) return [{ name: stripExtension(filename), bytes }]
-    return splitPdfx(bytes, manifest)
-  } finally {
-    void pdf.destroy()
+/** Build a plain single-document PDF (no manifest) from page references. */
+export async function buildPdf(pages: ExportPage[]): Promise<Uint8Array> {
+  const output = await PDFDocument.create()
+  const sources = new Map<string, PDFDocument>()
+  for (const page of pages) {
+    let source = sources.get(page.sourceKey)
+    if (!source) {
+      source = await PDFDocument.load(page.bytes, { ignoreEncryption: true })
+      sources.set(page.sourceKey, source)
+    }
+    const [copied] = await output.copyPages(source, [page.pageIndex])
+    output.addPage(copied)
   }
+  output.setProducer(`PDFX ${PDFX_VERSION}`)
+  return output.save()
 }
 
 /** Merge documents into a single PDFX container: a valid PDF plus the manifest attachment. */
-export async function buildPdfx(documents: SourceDocument[], title: string): Promise<Uint8Array> {
+export async function buildPdfx(documents: ExportDocument[], title: string): Promise<Uint8Array> {
   const output = await PDFDocument.create()
   const manifest: PdfxManifest = { pdfx: PDFX_VERSION, title, documents: [] }
+  const sources = new Map<string, PDFDocument>()
 
   for (const doc of documents) {
-    const source = await PDFDocument.load(doc.bytes, { ignoreEncryption: true })
-    const pages = await output.copyPages(source, source.getPageIndices())
-    pages.forEach((page) => output.addPage(page))
-    manifest.documents.push({ name: doc.name, pages: source.getPageCount() })
+    if (doc.pages.length === 0) continue
+    for (const page of doc.pages) {
+      let source = sources.get(page.sourceKey)
+      if (!source) {
+        source = await PDFDocument.load(page.bytes, { ignoreEncryption: true })
+        sources.set(page.sourceKey, source)
+      }
+      const [copied] = await output.copyPages(source, [page.pageIndex])
+      output.addPage(copied)
+    }
+    manifest.documents.push({ name: doc.name, pages: doc.pages.length })
   }
 
   await output.attach(new TextEncoder().encode(JSON.stringify(manifest, null, 2)), MANIFEST_NAME, {
