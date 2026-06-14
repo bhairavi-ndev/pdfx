@@ -196,49 +196,55 @@ export function DocumentRow({
           }
         }}
       >
-        {doc.pages.map((page, pageIndex) => (
-          <div
-            key={page.id}
-            data-page-id={page.id}
-            className={
-              'page' +
-              (page.id === selectedPageId ? ' selected' : '') +
-              (page.id === draggingPageId ? ' dragging' : '')
-            }
-            style={{
-              width: Math.max(6, Math.round((pageHeight * page.width) / page.height)),
-              height: pageHeight,
-              marginLeft:
-                dropHintIndex !== null && pageIndex === dropHintIndex
-                  ? dropHintWidth + 18
-                  : undefined,
-              marginRight:
-                dropHintIndex !== null &&
-                dropHintIndex === doc.pages.length &&
-                pageIndex === doc.pages.length - 1
-                  ? dropHintWidth + 18
-                  : undefined
-            }}
-            draggable
-            onClick={(e) => {
-              e.stopPropagation()
-              onSelectPage(page.id)
-            }}
-            onDoubleClick={(e) => {
-              e.stopPropagation()
-              onOpenPage(page.id)
-            }}
-            onDragStart={(e) => {
-              e.dataTransfer.setData('application/x-pdfx-page', page.id)
-              e.dataTransfer.effectAllowed = 'move'
-              onPageDragStart(page.id)
-            }}
-            onDragEnd={onPageDragEnd}
-          >
-            <PageCanvas pdf={page.source.pdf} pageNumber={page.pageIndex + 1} height={pageHeight} />
-            <span className="page-number">{pageIndex + 1}</span>
-          </div>
-        ))}
+        <div className="page-strip-inner">
+          {doc.pages.map((page, pageIndex) => (
+            <div
+              key={page.id}
+              data-page-id={page.id}
+              className={
+                'page' +
+                (page.id === selectedPageId ? ' selected' : '') +
+                (page.id === draggingPageId ? ' dragging' : '')
+              }
+              style={{
+                width: Math.max(6, Math.round((pageHeight * page.width) / page.height)),
+                height: pageHeight,
+                marginLeft:
+                  dropHintIndex !== null && pageIndex === dropHintIndex
+                    ? dropHintWidth + 18
+                    : undefined,
+                marginRight:
+                  dropHintIndex !== null &&
+                  dropHintIndex === doc.pages.length &&
+                  pageIndex === doc.pages.length - 1
+                    ? dropHintWidth + 18
+                    : undefined
+              }}
+              draggable
+              onClick={(e) => {
+                e.stopPropagation()
+                onSelectPage(page.id)
+              }}
+              onDoubleClick={(e) => {
+                e.stopPropagation()
+                onOpenPage(page.id)
+              }}
+              onDragStart={(e) => {
+                e.dataTransfer.setData('application/x-pdfx-page', page.id)
+                e.dataTransfer.effectAllowed = 'move'
+                onPageDragStart(page.id)
+              }}
+              onDragEnd={onPageDragEnd}
+            >
+              <PageCanvas
+                pdf={page.source.pdf}
+                pageNumber={page.pageIndex + 1}
+                height={pageHeight}
+              />
+              <span className="page-number">{pageIndex + 1}</span>
+            </div>
+          ))}
+        </div>
       </div>
     </section>
   )

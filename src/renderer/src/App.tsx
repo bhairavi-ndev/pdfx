@@ -27,6 +27,107 @@ const toExportPage = (
   pageIndex: page.pageIndex
 })
 
+/**
+ * Offset model ("invisible container"): per axis, content may transiently
+ * overflow past its start edge (translate < 0) but may NEVER detach from its
+ * dock leaving a gap (translate > 0 is forbidden). The offset lives in
+ * native scroll whenever scroll range exists; the translate only carries
+ * what scroll cannot represent — needed because scrollLeft/scrollTop clamp
+ * at 0, so when content fits the viewport there is no scroll range at all
+ * and cursor-anchored zoom would otherwise be impossible. Leftover translate
+ * is folded back into scroll and glided to the dock when zooming goes idle
+ * (redockAxis), so content can never be stranded off-screen.
+ */
+
+function writeTransform(inner: HTMLElement): void {
+  const tx = Number(inner.dataset.tx ?? 0)
+  const ty = Number(inner.dataset.ty ?? 0)
+  inner.style.transform = tx || ty ? `translate(${tx}px, ${ty}px)` : ''
+}
+
+// Stop a running re-dock glide, committing its current visual position so a
+// resumed zoom takes over without a jump.
+function settleAnimations(inner: HTMLElement): void {
+  const animations = inner.getAnimations()
+  if (animations.length === 0) return
+  const computed = getComputedStyle(inner).transform
+  const matrix = new DOMMatrixReadOnly(computed === 'none' ? undefined : computed)
+  animations.forEach((animation) => animation.cancel())
+  inner.dataset.tx = String(matrix.m41)
+  inner.dataset.ty = String(matrix.m42)
+  writeTransform(inner)
+}
+
+function maxScrollOf(scroller: HTMLElement, horizontal: boolean): number {
+  return Math.max(
+    0,
+    horizontal
+      ? scroller.scrollWidth - scroller.clientWidth
+      : scroller.scrollHeight - scroller.clientHeight
+  )
+}
+
+function contentOffset(scroller: HTMLElement, inner: HTMLElement, axis: 'x' | 'y'): number {
+  settleAnimations(inner)
+  const horizontal = axis === 'x'
+  const translate = Number(inner.dataset[horizontal ? 'tx' : 'ty'] ?? 0)
+  return translate - (horizontal ? scroller.scrollLeft : scroller.scrollTop)
+}
+
+/** Shift content along one axis by `delta` viewport pixels, within bounds. */
+function shiftAxis(
+  scroller: HTMLElement,
+  inner: HTMLElement,
+  axis: 'x' | 'y',
+  delta: number
+): void {
+  settleAnimations(inner)
+  const horizontal = axis === 'x'
+  const key = horizontal ? 'tx' : 'ty'
+  const scrollPos = horizontal ? scroller.scrollLeft : scroller.scrollTop
+  const translate = Number(inner.dataset[key] ?? 0)
+  // Desired content offset relative to the scrollport start.
+  const target = translate - scrollPos + delta
+  const nextScroll = Math.min(Math.max(-target, 0), maxScrollOf(scroller, horizontal))
+  // Gap side is pinned to the dock (never positive); the hidden side keeps
+  // what scroll can't represent, recovered later by the idle re-dock.
+  const nextTranslate = Math.min(0, target + nextScroll)
+
+  if (horizontal) scroller.scrollLeft = nextScroll
+  else scroller.scrollTop = nextScroll
+  inner.dataset[key] = String(nextTranslate)
+  writeTransform(inner)
+}
+
+/** Fold leftover translate into native scroll, then glide the rest to the dock. */
+function redockAxis(scroller: HTMLElement, inner: HTMLElement, axis: 'x' | 'y'): void {
+  settleAnimations(inner)
+  const horizontal = axis === 'x'
+  const key = horizontal ? 'tx' : 'ty'
+  const translate = Number(inner.dataset[key] ?? 0)
+  if (translate === 0) return
+  const scrollPos = horizontal ? scroller.scrollLeft : scroller.scrollTop
+  // Fold what native scroll can absorb — visually a no-op.
+  const fold = Math.min(-translate, maxScrollOf(scroller, horizontal) - scrollPos)
+  const remainder = translate + fold
+  if (horizontal) scroller.scrollLeft = scrollPos + fold
+  else scroller.scrollTop = scrollPos + fold
+  inner.dataset[key] = '0'
+  writeTransform(inner)
+  if (Math.abs(remainder) > 0.5) {
+    const tx = Number(inner.dataset.tx ?? 0)
+    const ty = Number(inner.dataset.ty ?? 0)
+    const from = horizontal
+      ? `translate(${remainder}px, ${ty}px)`
+      : `translate(${tx}px, ${remainder}px)`
+    const to = `translate(${tx}px, ${ty}px)`
+    inner.animate([{ transform: from }, { transform: to }], {
+      duration: 260,
+      easing: 'cubic-bezier(0.2, 0, 0, 1)'
+    })
+  }
+}
+
 const BASE_PAGE_HEIGHT = 300
 // Min is generous on purpose: a birds-eye view fitting 10+ documents vertically.
 const MIN_ZOOM = 0.06
@@ -93,7 +194,20 @@ export default function App(): React.JSX.Element {
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const contentRef = useRef<HTMLElement>(null)
   const zoomRef = useRef(1)
-  const zoomAnchor = useRef<{ prev: number; x: number; y: number } | null>(null)
+  const zoomAnchor = useRef<{
+    /** Zoom the DOM actually reflects (the last committed one). */
+    prev: number
+    /** Anchor point in viewport coordinates. */
+    x: number
+    y: number
+    /** Hovered strip and page, for exact element-based correction. */
+    strip: HTMLElement | null
+    page: HTMLElement | null
+    /** Horizontal fraction of the cursor across the page (may extrapolate past 0..1). */
+    pageFrac: number
+    /** Cursor offset from the hovered strip's top edge. */
+    stripOffsetY: number
+  } | null>(null)
 
   const flash = useCallback((message: string) => {
     if (toastTimer.current) clearTimeout(toastTimer.current)
@@ -101,35 +215,121 @@ export default function App(): React.JSX.Element {
     toastTimer.current = setTimeout(() => setToast(null), 4000)
   }, [])
 
-  // Change zoom keeping `anchor` (viewport coords, default: center) visually fixed.
-  const applyZoom = useCallback((next: number, anchor?: { x: number; y: number }) => {
-    const prev = zoomRef.current
-    const clamped = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, next))
-    if (clamped === prev) return
+  // When the zoom gesture goes idle, glide any content that's overflowing
+  // past its start edge back to the dock — nothing can stay stranded.
+  const redockTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const redockAll = useCallback(() => {
     const content = contentRef.current
-    if (content) {
-      const rect = content.getBoundingClientRect()
-      zoomAnchor.current = {
-        prev,
-        x: anchor ? anchor.x - rect.left : rect.width / 2,
-        y: anchor ? anchor.y - rect.top : rect.height / 2
-      }
-    }
-    zoomRef.current = clamped
-    setZoom(clamped)
+    if (!content) return
+    const docList = content.querySelector<HTMLElement>('.doc-list')
+    if (docList) redockAxis(content, docList, 'y')
+    content.querySelectorAll<HTMLElement>('.page-strip').forEach((strip) => {
+      const inner = strip.firstElementChild as HTMLElement | null
+      if (inner) redockAxis(strip, inner, 'x')
+    })
   }, [])
 
-  // After the DOM reflows at the new size, correct scroll positions so the
-  // anchor point stays put (proportional — headers don't scale, close enough).
+  // Change zoom keeping `anchor` (viewport coords, default: center) visually fixed.
+  const applyZoom = useCallback(
+    (next: number, anchor?: { x: number; y: number }) => {
+      const prev = zoomRef.current
+      const clamped = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, next))
+      if (clamped === prev) return
+      const content = contentRef.current
+      // Capture the anchor ONCE per commit. Under load several wheel events
+      // coalesce into one render; re-capturing would record an intermediate
+      // zoom the DOM never showed, under-correcting the scroll (the classic
+      // "drift to a previous page" bug).
+      if (content && !zoomAnchor.current) {
+        const rect = content.getBoundingClientRect()
+        const x = anchor ? anchor.x : rect.left + rect.width / 2
+        const y = anchor ? anchor.y : rect.top + rect.height / 2
+
+        // Find the strip and page under the anchor for exact correction.
+        // elementsFromPoint pierces overlays like the sticky headers.
+        let strip: HTMLElement | null = null
+        let page: HTMLElement | null = null
+        for (const el of document.elementsFromPoint(x, y)) {
+          if (!(el instanceof HTMLElement)) continue
+          if (!page && el.matches('.page')) page = el
+          if (el.matches('.page-strip')) {
+            strip = el
+            break
+          }
+        }
+        if (strip && !page) {
+          // Cursor over a gap: anchor to the nearest page in this strip.
+          let bestDistance = Infinity
+          strip.querySelectorAll<HTMLElement>('[data-page-id]').forEach((el) => {
+            const r = el.getBoundingClientRect()
+            const distance = x < r.left ? r.left - x : x > r.right ? x - r.right : 0
+            if (distance < bestDistance) {
+              bestDistance = distance
+              page = el
+            }
+          })
+        }
+        const pageRect = page?.getBoundingClientRect()
+        zoomAnchor.current = {
+          prev,
+          x,
+          y,
+          strip,
+          page,
+          pageFrac: pageRect ? (x - pageRect.left) / Math.max(1, pageRect.width) : 0,
+          stripOffsetY: strip ? y - strip.getBoundingClientRect().top : 0
+        }
+      }
+      zoomRef.current = clamped
+      setZoom(clamped)
+      if (redockTimer.current) clearTimeout(redockTimer.current)
+      redockTimer.current = setTimeout(redockAll, 300)
+    },
+    [redockAll]
+  )
+
+  // After the DOM reflows at the new size, correct positions so the anchor
+  // point stays put. The hovered strip is corrected exactly via the anchored
+  // page element (fixed paddings/gaps make proportional scaling drift);
+  // everything else falls back to proportional. All shifts go through
+  // shiftAxis, which keeps anchoring exact even when content fits the
+  // viewport and native scroll has no range.
   useLayoutEffect(() => {
     const anchor = zoomAnchor.current
     const content = contentRef.current
     if (!anchor || !content) return
     zoomAnchor.current = null
     const ratio = zoom / anchor.prev
-    content.scrollTop = (content.scrollTop + anchor.y) * ratio - anchor.y
-    content.querySelectorAll('.page-strip').forEach((strip) => {
-      strip.scrollLeft = (strip.scrollLeft + anchor.x) * ratio - anchor.x
+    const rect = content.getBoundingClientRect()
+    const docList = content.querySelector<HTMLElement>('.doc-list')
+
+    // Vertical: pin the hovered strip's cursor offset (page heights scale by
+    // exactly `ratio`; headers above don't move within the row).
+    if (docList) {
+      if (anchor.strip?.isConnected) {
+        const stripTop = anchor.strip.getBoundingClientRect().top
+        const desiredTop = anchor.y - anchor.stripOffsetY * ratio
+        shiftAxis(content, docList, 'y', desiredTop - stripTop)
+      } else {
+        const yRel = anchor.y - rect.top
+        const offset = contentOffset(content, docList, 'y')
+        shiftAxis(content, docList, 'y', (offset - yRel) * (ratio - 1))
+      }
+    }
+
+    // Horizontal
+    const xRel = anchor.x - rect.left
+    content.querySelectorAll<HTMLElement>('.page-strip').forEach((strip) => {
+      const inner = strip.firstElementChild as HTMLElement | null
+      if (!inner) return
+      if (strip === anchor.strip && anchor.page?.isConnected) {
+        const pageRect = anchor.page.getBoundingClientRect()
+        const target = pageRect.left + anchor.pageFrac * pageRect.width
+        shiftAxis(strip, inner, 'x', anchor.x - target)
+      } else {
+        const offset = contentOffset(strip, inner, 'x')
+        shiftAxis(strip, inner, 'x', (offset - xRel) * (ratio - 1))
+      }
     })
   }, [zoom])
 
@@ -143,7 +343,7 @@ export default function App(): React.JSX.Element {
       event.preventDefault()
       // With shift held, Chromium reports the wheel delta as deltaX.
       const delta = event.deltaY !== 0 ? event.deltaY : event.deltaX
-      const factor = Math.exp(-delta * 0.0056)
+      const factor = Math.exp(-delta * 0.0112)
       applyZoom(zoomRef.current * factor, { x: event.clientX, y: event.clientY })
     }
     content.addEventListener('wheel', onWheel, { passive: false })

@@ -250,11 +250,18 @@ body {
 }
 
 .page-strip {
+  overflow-x: auto;
+  scroll-padding: 28px;
+}
+
+/* When a strip's content fits the viewport there is no scroll range, so the
+   zoom anchor translates this inner wrapper instead (it can go negative,
+   scrollLeft can't); once content overflows, the offset folds into scroll. */
+.page-strip-inner {
   display: flex;
   gap: 18px;
-  overflow-x: auto;
   padding: 4px 28px 16px;
-  scroll-padding: 28px;
+  width: max-content;
 }
 
 .page {
@@ -339,7 +346,7 @@ body {
   font-size: 10px;
 }
 
-.doc-list.compact .page-strip {
+.doc-list.compact .page-strip-inner {
   gap: 8px;
   padding: 2px 28px 6px;
 }
