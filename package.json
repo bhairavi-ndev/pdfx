@@ -1,7 +1,7 @@
 {
   "name": "pdfx",
   "productName": "PDFx",
-  "version": "1.0.0",
+  "version": "2026.6.1-beta.0",
   "description": "PDFX — a backwards-compatible PDF extension for multi-document files, with a minimal viewer",
   "main": "./out/main/index.js",
   "author": "Alex Gounis",
